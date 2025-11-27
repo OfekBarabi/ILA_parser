@@ -16,7 +16,7 @@ etc. Manually decoding and plotting that data is annoying.
 This application lets you:
 
 1.  Load an ILA CSV.
-2.  Search and select signals by (case-sensitive) substring.
+2.  Search and select signals by substring.
 3.  Decode packed fixed-point or custom float formats, including complex
     I/Q and parallel concatenation.
 4.  Optionally filter by VALID/SOP/EOP signals.
