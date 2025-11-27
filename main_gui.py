@@ -96,7 +96,7 @@ class ILAGuiApp(tk.Tk):
         entry_csv.grid(row=0, column=1, sticky="we", padx=5, pady=5)
         ttk.Button(sec1, text="Browse...", command=self.browse_csv).grid(row=0, column=2, padx=5, pady=5)
 
-        ttk.Label(sec1, text="Signal name contains(Upper/Lower case sensitive):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(sec1, text="Signal name contains:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(sec1, textvariable=self.signal_filter_var).grid(row=1, column=1, sticky="we", padx=5, pady=5)
         ttk.Button(sec1, text="Search", command=self.search_signals).grid(row=1, column=2, padx=5, pady=5)
 

@@ -241,13 +241,15 @@ def load_signals_from_csv(csv_path: Path, name_filter: str):
         base_idx = 3  # first 3 columns are metadata
         data_header = header[base_idx:]
 
+        name_filter_lower = name_filter.lower()
+
         # Find relevant columns
         for idx, signal_name in enumerate(data_header):
             # full name from header
             full_name = signal_name
             # short name for filtering / display
             signal_name_short = Path(signal_name).name
-            if name_filter in signal_name_short:
+            if name_filter_lower in signal_name_short.lower():
                 abs_col_idx = base_idx + idx
                 db[full_name] = {
                     "idx": abs_col_idx,
