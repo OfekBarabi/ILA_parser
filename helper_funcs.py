@@ -308,12 +308,3 @@ def filter_data(samples, valid_samples=None, sop_samples=None, eop_samples=None)
                 filtered_samples.append(samples[i])
 
     return filtered_samples
-
-
-def get_short_name(full_name: str) -> str:
-    """
-    Derive a short name from a hierarchical signal path.
-    Example: 'top/u_core/u_ila/probe0[3]' -> 'probe0[3]'
-    """
-    # You can tweak this heuristic to your taste.
-    return full_name.split("/")[-1]

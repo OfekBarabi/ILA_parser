@@ -6,14 +6,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from helper_funcs import (
-    convert_to_fixed,
-    sample_is_valid,
-    convert_db,
-    load_signals_from_csv,
-    filter_data,
-    get_short_name
-)
+from helper_funcs import *
 
 # ------------------------
 #  GUI Application (Tkinter)
@@ -41,36 +34,36 @@ class ILAGuiApp(tk.Tk):
 
     def _build_vars(self):
         # Section 1 Browse & Search
-        self.csv_path_var = tk.StringVar()
+        self.csv_path_var      = tk.StringVar()
         self.signal_filter_var = tk.StringVar()
         self.search_status_var = tk.StringVar(value="No file loaded.")
 
         # Section 2 Settings
-        self.name_display_mode = tk.StringVar(value="full")
+        self.name_display_mode  = tk.StringVar(value="full")
         self.signals_full_names = []
 
         self.data_type_var = tk.StringVar(value="1")
 
         self.sign_bits_var = tk.StringVar(value="1")
-        self.int_bits_var = tk.StringVar(value="0")
+        self.int_bits_var  = tk.StringVar(value="0")
         self.frac_bits_var = tk.StringVar(value="15")
 
         self.exp_bits_var = tk.StringVar(value="6")
         self.man_bits_var = tk.StringVar(value="13")
 
-        self.data_par_var = tk.StringVar(value="1")
+        self.data_par_var      = tk.StringVar(value="1")
         self.data_par_mode_var = tk.StringVar(value="serial")
 
         self.complex_var = tk.BooleanVar(value=True)
 
         self.valid_signal_var = tk.StringVar()
-        self.use_valid_var = tk.BooleanVar(value=False)
+        self.use_valid_var    = tk.BooleanVar(value=False)
 
         self.sop_signal_var = tk.StringVar()
-        self.use_sop_var = tk.BooleanVar(value=False)
+        self.use_sop_var    = tk.BooleanVar(value=False)
 
         self.eop_signal_var = tk.StringVar()
-        self.use_eop_var = tk.BooleanVar(value=False)
+        self.use_eop_var    = tk.BooleanVar(value=False)
 
         self.convert_status_var = tk.StringVar(value="")
 
@@ -78,16 +71,18 @@ class ILAGuiApp(tk.Tk):
         self.combine_swap_var = tk.BooleanVar(value=False)
 
         # Section 3 Export
-        self.output_dir_var = tk.StringVar(value=".")
+        self.output_dir_var    = tk.StringVar(value=".")
         self.base_filename_var = tk.StringVar(value="")
-        self.write_status_var = tk.StringVar(value="")
-        self.BTE_format_var = tk.BooleanVar(value=False)
-        self.wr_sign_bit_var = tk.StringVar(value="1")
-        self.wr_int_bits_var = tk.StringVar(value="0")
-        self.wr_frac_bits_var = tk.StringVar(value="15")
+        self.write_status_var  = tk.StringVar(value="")
+        self.BTE_format_var    = tk.BooleanVar(value=False)
+        self.wr_sign_bit_var   = tk.StringVar(value="1")
+        self.wr_int_bits_var   = tk.StringVar(value="0")
+        self.wr_frac_bits_var  = tk.StringVar(value="15")
 
         # Section 4 Plot
         self.plot_from_file_bte_var = tk.BooleanVar(value=False)
+        self.num_of_packets_var     = tk.StringVar(value="1")
+        self.same_plot_window_var = tk.BooleanVar(value=False)
 
     # --- UI Layout ---
 
@@ -422,6 +417,20 @@ class ILAGuiApp(tk.Tk):
         )
         self.plot_from_file_bte_check.grid(row=1, column=3, sticky="w", padx=5, pady=5)
 
+        ttk.Label(sec4, text="Packets").grid(
+            row=1, column=4, sticky="w", padx=5, pady=5
+        )
+        ttk.Entry(sec4, width=3, textvariable=self.num_of_packets_var).grid(
+            row=1, column=5, sticky="w", padx=(2, 0), pady=5
+        )
+
+        self.same_plot_window_check = ttk.Checkbutton(
+            sec4,
+            text="Same plot window",
+            variable=self.same_plot_window_var
+        )
+        self.same_plot_window_check.grid(row=1, column=6, sticky="w", padx=5, pady=5)
+
     # ------------- Core GUI methods (browse, search, convert, combine, plot, write) -------------
 
     # --- Section 1 actions ---
@@ -479,7 +488,7 @@ class ILAGuiApp(tk.Tk):
         mode = self.name_display_mode.get()
         for full in self.signals_full_names:
             if mode == "short":
-                disp = get_short_name(full)
+                disp = full.split("/")[-1]
             else:
                 disp = full
             self.signals_listbox.insert(tk.END, disp)
@@ -1459,9 +1468,14 @@ class ILAGuiApp(tk.Tk):
             return
 
         is_bte = self.plot_from_file_bte_var.get()
+        num_of_pkts = 1
 
         try:
             if is_bte:
+                num_of_pkts = int(self.num_of_packets_var.get())
+                data = [[] for _ in range(num_of_pkts)]
+                curr_packet = 0
+                pkts_found  = 0
                 # ----- BTE format: START ... data ... END -----
                 with open(filename, "r", encoding="utf-8") as f:
                     # strip empty lines
@@ -1473,6 +1487,9 @@ class ILAGuiApp(tk.Tk):
                     for i in range(len(lines)):
                         toks = lines[i].split()
                         if toks[0] == "START":
+                            pkts_found += 1
+                            if pkts_found > num_of_pkts: # check to avoid overflow
+                                break
                             re_vals = []
                             im_vals = []
                             i += 1
@@ -1488,13 +1505,12 @@ class ILAGuiApp(tk.Tk):
                                 i += 1
                                 toks = lines[i].split()
 
-                            # Stopping after one packet, TODO need to add multiple packets handle
-                            break
+                            if im_vals:
+                                data[curr_packet] = np.array(re_vals, dtype=float) + 1j * np.array(im_vals, dtype=float)
+                            else:
+                                data[curr_packet] = np.array(re_vals, dtype=float)
 
-                    if im_vals:
-                        data = np.array(re_vals, dtype=float) + 1j * np.array(im_vals, dtype=float)
-                    else:
-                        data = np.array(re_vals, dtype=float)
+                            curr_packet += 1
 
             else:
                 # ----- Normal format: 1 or 2 numeric columns -----
@@ -1518,7 +1534,31 @@ class ILAGuiApp(tk.Tk):
             return
 
         name = Path(filename).name
-        self._open_plot_popup(data, name)
+
+        if is_bte:
+            # BTE: multiple packets possible
+            if self.same_plot_window_var.get():
+                # Plot ALL packets in a single window using MultiPlot logic
+                series = {}
+                for i in range(num_of_pkts):
+                    # Skip empty packets, just in case
+                    if i < len(data) and len(data[i]) > 0:
+                        series[f"{name}_pkt_{i}"] = np.array(data[i])
+                if series:
+                    self._open_multi_plot_popup(series, f"{name} - all packets")
+                else:
+                    messagebox.showwarning("Warning", "No non-empty packets to plot.")
+            else:
+                # Original behavior: one popup per packet
+                for i in range(num_of_pkts):
+                    if i >= len(data):
+                        break
+                    curr_name = f"{name}_pkt_{i}"
+                    self._open_plot_popup(data[i], curr_name)
+        else:
+            # Non-BTE: single array → single window
+            self._open_plot_popup(data, name)
+
 
 # --- Main ---
 def main():
