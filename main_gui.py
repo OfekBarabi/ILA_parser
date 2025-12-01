@@ -852,7 +852,7 @@ class ILAGuiApp(tk.Tk):
 
         # Compute width in characters based on longest display name
         max_len = max(len(s) for s in display_names) if display_names else 20
-        listbox_width = min(max_len + 2, 100)  # clamp to something reasonable
+        listbox_width = max_len+2#min(max_len + 2, 250)  # clamp to something reasonable
 
         # Popup window
         win = tk.Toplevel(self)
@@ -871,7 +871,7 @@ class ILAGuiApp(tk.Tk):
         lb = tk.Listbox(
             frame,
             selectmode="browse",
-            height=12,
+            height=max(len(self.signals_full_names),20),
             width=listbox_width  # <- width in characters
         )
         lb.grid(row=0, column=0, sticky="nsew")
@@ -1122,6 +1122,7 @@ class ILAGuiApp(tk.Tk):
                 x = np.arange(first_len)
 
                 for name, y in series.items():
+                    name = name.split("/")[-1]
                     if kind == "Time - Real":
                         if np.iscomplexobj(y):
                             ax.plot(x, y.real, label=f"{name} (Re)")
@@ -1165,6 +1166,7 @@ class ILAGuiApp(tk.Tk):
                     xlabel = "Bin index"
 
                 for name, y in series.items():
+                    name = name.split("/")[-1]
                     Y = np.fft.fftshift(np.fft.fft(y))
                     mag = np.abs(Y)
 
