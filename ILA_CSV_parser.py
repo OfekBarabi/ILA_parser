@@ -6,7 +6,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from helper_funcs_ import *
+from helper_funcs import *
 
 
 class ILACSVParserTab(ttk.Frame):
