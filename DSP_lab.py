@@ -2,6 +2,8 @@
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 import numpy as np
 from helper_funcs import *  # expects collect_signals_v5, etc.
@@ -151,6 +153,22 @@ class DSPLabMatTab(ttk.Frame):
 
         # Double-click a line to preview the signal
         self.info_list.bind("<Double-1>", self._on_signal_double_click)
+
+        # -------- Section 4: Plot -------- #
+        sec4 = ttk.LabelFrame(self, text="4. Plot data")
+        sec4.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(sec4, text="Plot converted signal or data from file").grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=5, pady=5
+        )
+
+        ttk.Button(sec4, text="Plot signal…", command=self.plot_selected_signal_popup).grid(
+            row=1, column=0, sticky="w", padx=5, pady=5
+        )
+
+        ttk.Button(sec4, text="MultiPlot…", command=self.plot_multi_signals).grid(
+            row=1, column=1, sticky="w", padx=5, pady=5
+        )
 
     # ---------------- MAT Browser logic ---------------- #
 
@@ -430,3 +448,494 @@ class DSPLabMatTab(ttk.Frame):
             win.destroy()
 
         ttk.Button(win, text="Apply", command=apply_filter).pack(pady=(0, 10))
+
+    # ---------------- Plot ---------------- #
+
+    def _open_plot_popup(self, data_array, name):
+        """Generic plot popup for a given 1D array (real or complex)."""
+        data = np.array(data_array)
+        if data.size == 0:
+            messagebox.showwarning("Warning", f"No samples to plot for '{name}'.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title(f"Plot: {name}")
+        win.geometry("1000x680")
+
+        # Top controls frame
+        controls = ttk.Frame(win)
+        controls.pack(side="top", fill="x", padx=5, pady=5)
+
+        ttk.Label(controls, text="Plot type:").pack(side="left", padx=(0, 5))
+
+        is_complex = np.iscomplexobj(data)
+        plot_options = [
+            "Time - Real",
+            "Time - Imag",
+            "Time - Magnitude",
+            "Time - Phase",
+            "FFT - Magnitude",
+            "FFT - dB",
+        ]
+        plot_type_var = tk.StringVar(
+            value="Time - Real" if is_complex else "Time - Magnitude"
+        )
+
+        plot_menu = ttk.Combobox(
+            controls,
+            textvariable=plot_type_var,
+            values=plot_options,
+            state="readonly",
+            width=20,
+        )
+        plot_menu.pack(side="left", padx=5)
+
+        # Sample rate (for FFT)
+        ttk.Label(controls, text="Fs (Hz):").pack(side="left", padx=(15, 5))
+        fs_var = tk.StringVar(value="")
+        fs_entry = ttk.Entry(controls, textvariable=fs_var, width=12)
+        fs_entry.pack(side="left", padx=5)
+
+        # X-limits
+        ttk.Label(controls, text="Xmin:").pack(side="left", padx=(15, 5))
+        xmin_var = tk.StringVar(value="")
+        ttk.Entry(controls, textvariable=xmin_var, width=10).pack(side="left", padx=2)
+
+        ttk.Label(controls, text="Xmax:").pack(side="left", padx=(5, 5))
+        xmax_var = tk.StringVar(value="")
+        ttk.Entry(controls, textvariable=xmax_var, width=10).pack(side="left", padx=2)
+
+        ttk.Button(controls, text="Update", command=lambda: update_plot()).pack(
+            side="left", padx=10
+        )
+
+        # Matplotlib figure
+        fig = Figure(figsize=(6, 4), dpi=100)
+        ax = fig.add_subplot(111)
+
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas_widget = canvas.get_tk_widget()
+        canvas_widget.pack(side="top", fill="both", expand=True)
+
+        toolbar_frame = ttk.Frame(win)
+        toolbar_frame.pack(side="bottom", fill="x")
+        NavigationToolbar2Tk(canvas, toolbar_frame)
+
+        def get_fs():
+            fs_str = fs_var.get().strip()
+            if not fs_str:
+                return None
+            try:
+                fs_val = float(fs_str)
+                if fs_val <= 0:
+                    raise ValueError
+                return fs_val
+            except ValueError:
+                messagebox.showwarning(
+                    "Invalid Fs",
+                    "Sample rate (Fs) must be a positive number.\n"
+                    "Using bin index instead.",
+                )
+                return None
+
+        def get_xlim():
+            xmin_str = xmin_var.get().strip()
+            xmax_str = xmax_var.get().strip()
+            xmin = xmax = None
+
+            if xmin_str:
+                try:
+                    xmin = float(xmin_str)
+                except ValueError:
+                    messagebox.showwarning(
+                        "Invalid Xmin", "Xmin must be a number. Ignoring Xmin."
+                    )
+                    xmin = None
+
+            if xmax_str:
+                try:
+                    xmax = float(xmax_str)
+                except ValueError:
+                    messagebox.showwarning(
+                        "Invalid Xmax", "Xmax must be a number. Ignoring Xmax."
+                    )
+                    xmax = None
+
+            if (xmin is not None) and (xmax is not None) and (xmin >= xmax):
+                messagebox.showwarning(
+                    "Invalid range",
+                    "Xmin must be less than Xmax. Ignoring both.",
+                )
+                return None, None
+
+            return xmin, xmax
+
+        def apply_xlim():
+            xmin, xmax = get_xlim()
+            if xmin is not None or xmax is not None:
+                ax.set_xlim(
+                    left=xmin if xmin is not None else None,
+                    right=xmax if xmax is not None else None,
+                )
+
+        def update_plot():
+            ax.clear()
+            kind = plot_type_var.get()
+            y = data
+
+            if "Time" in kind:
+                x = np.arange(len(y))
+
+                if kind == "Time - Real":
+                    if is_complex:
+                        ax.plot(x, y.real, label="Real")
+                        ax.set_ylabel("Real")
+                    else:
+                        ax.plot(x, y, label="Value")
+                        ax.set_ylabel("Value")
+
+                elif kind == "Time - Imag":
+                    if is_complex:
+                        ax.plot(x, y.imag, label="Imag")
+                        ax.set_ylabel("Imag")
+                    else:
+                        messagebox.showwarning(
+                            "Warning", "Data is not complex; imag part is zero."
+                        )
+                        ax.plot(x, np.zeros_like(y), label="Imag (0)")
+                        ax.set_ylabel("Imag")
+
+                elif kind == "Time - Magnitude":
+                    mag = np.abs(y)
+                    ax.plot(x, mag, label="Magnitude")
+                    ax.set_ylabel("Magnitude")
+
+                elif kind == "Time - Phase":
+                    if is_complex:
+                        phase = np.angle(y)
+                        ax.plot(x, phase, label="Phase")
+                        ax.set_ylabel("Phase [rad]")
+                    else:
+                        messagebox.showwarning(
+                            "Warning", "Data is not complex; phase is undefined."
+                        )
+                        phase = np.zeros_like(y)
+                        ax.plot(x, phase, label="Phase (0)")
+                        ax.set_ylabel("Phase")
+
+                ax.set_xlabel("Sample index")
+                ax.set_title(f"{name} - {kind}")
+                ax.grid(True)
+                ax.legend(loc="best")
+
+            elif "FFT" in kind:
+                y_fft = np.fft.fftshift(np.fft.fft(y))
+                mag = np.abs(y_fft)
+                N = len(mag)
+
+                fs = get_fs()
+                if fs is not None:
+                    freq = np.fft.fftshift(np.fft.fftfreq(N, d=1.0 / fs))
+                    x = freq
+                    xlabel = "Frequency (Hz)"
+                else:
+                    x = np.arange(N)
+                    xlabel = "Bin index"
+
+                if kind == "FFT - Magnitude":
+                    ax.plot(x, mag, label="|FFT|")
+                    ax.set_ylabel("Magnitude")
+                elif kind == "FFT - dB":
+                    mag_db = 20 * np.log10(mag + 1e-12)
+                    ax.plot(x, mag_db, label="|FFT| dB")
+                    ax.set_ylabel("Magnitude [dB]")
+
+                ax.set_xlabel(xlabel)
+                ax.set_title(f"{name} - {kind}")
+                ax.grid(True)
+                ax.legend(loc="best")
+
+            apply_xlim()
+            fig.tight_layout()
+            canvas.draw_idle()
+
+        update_plot()
+
+    def _open_multi_plot_popup(self, series_dict, window_title):
+        """
+        Plot multiple series together.
+        series_dict: {name: np.array([...])} (all same length)
+        """
+        # Convert to numpy and figure out if any is complex
+        series = {name: np.array(data) for name, data in series_dict.items()}
+        if not series:
+            messagebox.showwarning("Warning", "No data to plot.")
+            return
+
+        first_len = len(next(iter(series.values())))
+        if first_len == 0:
+            messagebox.showwarning("Warning", "Selected signals have no samples.")
+            return
+
+        is_complex = any(np.iscomplexobj(arr) for arr in series.values())
+
+        win = tk.Toplevel(self)
+        win.title(window_title)
+        win.geometry("1000x680")
+
+        # Controls
+        controls = ttk.Frame(win)
+        controls.pack(side="top", fill="x", padx=5, pady=5)
+
+        ttk.Label(controls, text="Plot type:").pack(side="left", padx=(0, 5))
+
+        plot_options = [
+            "Time - Real",
+            "Time - Imag",
+            "Time - Magnitude",
+            "Time - Phase",
+            "FFT - Magnitude",
+            "FFT - dB",
+        ]
+        plot_type_var = tk.StringVar(
+            value="Time - Real" if is_complex else "Time - Magnitude"
+        )
+
+        plot_menu = ttk.Combobox(
+            controls,
+            textvariable=plot_type_var,
+            values=plot_options,
+            state="readonly",
+            width=20,
+        )
+        plot_menu.pack(side="left", padx=5)
+
+        # Fs (for FFT)
+        ttk.Label(controls, text="Fs (Hz):").pack(side="left", padx=(15, 5))
+        fs_var = tk.StringVar(value="")
+        fs_entry = ttk.Entry(controls, textvariable=fs_var, width=12)
+        fs_entry.pack(side="left", padx=5)
+
+        # X-limits
+        ttk.Label(controls, text="Xmin:").pack(side="left", padx=(15, 5))
+        xmin_var = tk.StringVar(value="")
+        ttk.Entry(controls, textvariable=xmin_var, width=10).pack(side="left", padx=2)
+
+        ttk.Label(controls, text="Xmax:").pack(side="left", padx=(5, 5))
+        xmax_var = tk.StringVar(value="")
+        ttk.Entry(controls, textvariable=xmax_var, width=10).pack(side="left", padx=2)
+
+        ttk.Button(controls, text="Update", command=lambda: update_plot()).pack(
+            side="left", padx=10
+        )
+
+        # Matplotlib figure
+        fig = Figure(figsize=(6, 4), dpi=100)
+        ax = fig.add_subplot(111)
+
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas_widget = canvas.get_tk_widget()
+        canvas_widget.pack(side="top", fill="both", expand=True)
+
+        toolbar_frame = ttk.Frame(win)
+        toolbar_frame.pack(side="bottom", fill="x")
+        NavigationToolbar2Tk(canvas, toolbar_frame)
+
+        def get_fs():
+            fs_str = fs_var.get().strip()
+            if not fs_str:
+                return None
+            try:
+                fs_val = float(fs_str)
+                if fs_val <= 0:
+                    raise ValueError
+                return fs_val
+            except ValueError:
+                messagebox.showwarning(
+                    "Invalid Fs",
+                    "Sample rate (Fs) must be a positive number.\n"
+                    "Using bin index instead.",
+                )
+                return None
+
+        def get_xlim():
+            xmin_str = xmin_var.get().strip()
+            xmax_str = xmax_var.get().strip()
+            xmin = xmax = None
+
+            if xmin_str:
+                try:
+                    xmin = float(xmin_str)
+                except ValueError:
+                    messagebox.showwarning(
+                        "Invalid Xmin", "Xmin must be a number. Ignoring Xmin."
+                    )
+                    xmin = None
+
+            if xmax_str:
+                try:
+                    xmax = float(xmax_str)
+                except ValueError:
+                    messagebox.showwarning(
+                        "Invalid Xmax", "Xmax must be a number. Ignoring Xmax."
+                    )
+                    xmax = None
+
+            if (xmin is not None) and (xmax is not None) and (xmin >= xmax):
+                messagebox.showwarning(
+                    "Invalid range",
+                    "Xmin must be less than Xmax. Ignoring both.",
+                )
+                return None, None
+
+            return xmin, xmax
+
+        def apply_xlim():
+            xmin, xmax = get_xlim()
+            if xmin is not None or xmax is not None:
+                ax.set_xlim(
+                    left=xmin if xmin is not None else None,
+                    right=xmax if xmax is not None else None,
+                )
+
+        def update_plot():
+            ax.clear()
+            kind = plot_type_var.get()
+
+            if "Time" in kind:
+                x = np.arange(first_len)
+
+                for name, y in series.items():
+                    name = name.split("/")[-1]
+                    if kind == "Time - Real":
+                        if np.iscomplexobj(y):
+                            ax.plot(x, y.real, label=f"{name} (Re)")
+                        else:
+                            ax.plot(x, y, label=name)
+
+                    elif kind == "Time - Imag":
+                        if np.iscomplexobj(y):
+                            ax.plot(x, y.imag, label=f"{name} (Im)")
+                        else:
+                            # Real-only → imag = 0
+                            ax.plot(x, np.zeros_like(y), label=f"{name} (Im=0)")
+
+                    elif kind == "Time - Magnitude":
+                        mag = np.abs(y)
+                        ax.plot(x, mag, label=f"{name} |.|")
+
+                    elif kind == "Time - Phase":
+                        if np.iscomplexobj(y):
+                            phase = np.angle(y)
+                        else:
+                            phase = np.zeros_like(y)
+                        ax.plot(x, phase, label=f"{name} ∠")
+
+                ax.set_xlabel("Sample index")
+                ax.set_ylabel(kind.replace("Time - ", ""))
+                ax.set_title(kind)
+                ax.grid(True)
+                ax.legend(loc="best")
+
+            elif "FFT" in kind:
+                # All have same length (checked earlier)
+                N = first_len
+                fs = get_fs()
+                if fs is not None:
+                    freq = np.fft.fftshift(np.fft.fftfreq(N, d=1.0 / fs))
+                    x = freq
+                    xlabel = "Frequency (Hz)"
+                else:
+                    x = np.arange(N)
+                    xlabel = "Bin index"
+
+                for name, y in series.items():
+                    name = name.split("/")[-1]
+                    Y = np.fft.fftshift(np.fft.fft(y))
+                    mag = np.abs(Y)
+
+                    if kind == "FFT - Magnitude":
+                        ax.plot(x, mag, label=name)
+                        ax.set_ylabel("Magnitude")
+                    elif kind == "FFT - dB":
+                        mag_db = 20 * np.log10(mag + 1e-12)
+                        ax.plot(x, mag_db, label=name)
+                        ax.set_ylabel("Magnitude [dB]")
+
+                ax.set_xlabel(xlabel)
+                ax.set_title(kind)
+                ax.grid(True)
+                ax.legend(loc="best")
+
+            apply_xlim()
+            fig.tight_layout()
+            canvas.draw_idle()
+
+        update_plot()
+
+    def plot_multi_signals(self):
+        """Plot several converted signals together in one popup."""
+        if not self.signals:
+            messagebox.showerror("Error", "No data. Create a signal first.")
+            return
+
+        selection = self.info_list.curselection()
+        if len(selection) < 2:
+            messagebox.showerror(
+                "Error",
+                "Please select at least two signals for MultiPlot.\n"
+                "For a single signal, use 'Plot signal…'."
+            )
+            return
+
+        # Build dict: name -> numpy array
+        series = {}
+        lengths = set()
+
+        for idx in selection:
+            name = self.info_list.get(idx)
+            samples = self.signals.get(name, {})
+            arr = np.array(samples)
+            series[name] = arr
+            lengths.add(arr.size)
+
+        if len(lengths) > 1:
+            messagebox.showerror(
+                "Error",
+                "All selected signals must have the same number of samples\n"
+                f"(found lengths: {sorted(lengths)})."
+            )
+            return
+
+        # Title for window
+        names_list = [self.info_list.get(i) for i in selection]
+        title = "MultiPlot: " + ", ".join(names_list)
+
+        self._open_multi_plot_popup(series, title)
+
+    def plot_selected_signal_popup(self):
+        """Wrapper: plot currently selected converted signal."""
+        if not self.signals:
+            messagebox.showerror("Error", "No converted data. Run Convert first.")
+            return
+
+        selection = self.info_list.curselection()
+        if not selection:
+            messagebox.showerror("Error", "Please select a converted signal to plot.")
+            return
+
+        sig_name = self.info_list.get(selection[0])
+        sig_name = sig_name.split("|", 1)[0].strip()
+        samples = self.signals.get(sig_name, {})
+
+        self._open_plot_popup(samples, sig_name)
+
+# ---- Optional standalone demo ----
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("DSP Lab + MAT Parser")
+
+    tab = DSPLabMatTab(root)
+    tab.pack(fill="both", expand=True)
+
+    root.mainloop()

@@ -13,15 +13,16 @@ class ILACSVParserTab(ttk.Frame):
     def __init__(self, parent, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
 
-        self.db_raw = {}
-        self.db_converted = {}
-
         self._build_vars()
         self._build_ui()
 
     # --- Variables ---
 
     def _build_vars(self):
+
+        self.db_raw = {}
+        self.db_converted = {}
+
         # Section 1 Browse & Search
         self.csv_path_var      = tk.StringVar()
         self.signal_filter_var = tk.StringVar()
