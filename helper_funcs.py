@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 from scipy.io.matlab.mio5_params import mat_struct
+from ba_quan import *
 
 # ------------------------
 #  Core conversion helpers
