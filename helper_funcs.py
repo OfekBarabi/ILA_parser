@@ -1,11 +1,83 @@
 import csv
 from pathlib import Path
 import numpy as np
+from scipy.io import loadmat
+from scipy.io.matlab.mio5_params import mat_struct
+from ba_quan import *
 
 # ------------------------
 #  Core conversion helpers
 # ------------------------
 
+# ---------- MAT Helpers ---------- #
+def _matobj_to_dict(obj):
+    """
+    Recursively convert scipy.io.matlab.mat_struct and object arrays
+    into nested Python dict / list / numpy arrays.
+    """
+    if isinstance(obj, mat_struct):
+        out = {}
+        for name in obj._fieldnames:
+            value = getattr(obj, name)
+            out[name] = _matobj_to_dict(value)
+        return out
+
+    # cell arrays or struct arrays become lists
+    if isinstance(obj, np.ndarray) and obj.dtype == object:
+        return [_matobj_to_dict(v) for v in obj.flat]
+
+    # numeric arrays, strings, scalars – leave as is
+    return obj
+
+
+def _flatten_struct(obj, parent_key="", sep="."):
+    """
+    Walk nested dict/list and yield (path, leaf_array).
+    Only emits leaves that can be interpreted as numeric numpy arrays.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            yield from _flatten_struct(v, new_key, sep)
+
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
+            yield from _flatten_struct(v, new_key, sep)
+
+    else:
+        # leaf – try to interpret as numeric array
+        arr = np.array(obj)
+        if np.issubdtype(arr.dtype, np.number):
+            # Only emit if we have a meaningful name
+            if parent_key:
+                yield parent_key, arr
+
+
+def collect_signals_v5(path):
+    """
+    Load a (non-v7.3) MAT file and return:
+        { "var.subfield[.subsub]": np.ndarray, ... }
+    """
+    raw = loadmat(path, struct_as_record=False, squeeze_me=True)
+
+    # Strip MATLAB internal keys
+    top = {}
+    for k, v in raw.items():
+        if k.startswith("__"): # Meta data
+            continue
+        top[k] = _matobj_to_dict(v)
+
+    signals = {}
+    for top_name, top_val in top.items():
+        for name, arr in _flatten_struct(top_val, parent_key=top_name):
+            signals[name] = arr
+
+    return signals
+
+
+# ---------- DSP Helpers ---------- #
+# ---------- ILA Helpers ---------- #
 def to_signed_dec(raw, data_prec):
     """
     Convert an integer 'raw' in fixed-point s.int.frac format
