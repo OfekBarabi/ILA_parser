@@ -8,7 +8,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from helper_funcs import *
 
-
 class ILACSVParserTab(ttk.Frame):
     def __init__(self, parent, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
@@ -20,8 +19,14 @@ class ILACSVParserTab(ttk.Frame):
 
     def _build_vars(self):
 
+        # Raw DBs by source type
+        self.db_raw_ila = {}
+        self.db_raw_stp = {}
+        # Active raw DB
         self.db_raw = {}
         self.db_converted = {}
+
+        self.csv_kind_var = tk.StringVar(value="unknown")
 
         # Section 1 Browse & Search
         self.csv_path_var      = tk.StringVar()
@@ -55,6 +60,11 @@ class ILACSVParserTab(ttk.Frame):
         self.eop_signal_var = tk.StringVar()
         self.use_eop_var    = tk.BooleanVar(value=False)
 
+        # Packet output selection when using VALID/SOP/EOP filtering
+        # 'concat' -> one long array (all packets)
+        # 'multi'  -> create multiple arrays (signal__pkt0, signal__pkt1, ...)
+        self.packet_output_var = tk.StringVar(value="concat")
+
         self.convert_status_var = tk.StringVar(value="")
 
         self.combine_mode_var = tk.StringVar(value="ri")
@@ -65,6 +75,7 @@ class ILACSVParserTab(ttk.Frame):
         self.base_filename_var = tk.StringVar(value="")
         self.write_status_var  = tk.StringVar(value="")
         self.BTE_format_var    = tk.BooleanVar(value=False)
+        self.export_format_var = tk.StringVar(value="as-is")
         self.wr_sign_bit_var   = tk.StringVar(value="1")
         self.wr_int_bits_var   = tk.StringVar(value="0")
         self.wr_frac_bits_var  = tk.StringVar(value="15")
@@ -85,13 +96,14 @@ class ILACSVParserTab(ttk.Frame):
         entry_csv = ttk.Entry(sec1, textvariable=self.csv_path_var)
         entry_csv.grid(row=0, column=1, sticky="we", padx=5, pady=5)
         ttk.Button(sec1, text="Browse...", command=self.browse_csv).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(sec1, text="Detect file type", command=self.detect_file_type).grid(row=0, column=3, padx=(0, 5), pady=5)
 
         ttk.Label(sec1, text="Signal name contains:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(sec1, textvariable=self.signal_filter_var).grid(row=1, column=1, sticky="we", padx=5, pady=5)
         ttk.Button(sec1, text="Search", command=self.search_signals).grid(row=1, column=2, padx=5, pady=5)
 
         ttk.Label(sec1, textvariable=self.search_status_var).grid(
-            row=2, column=0, columnspan=3, sticky="w", padx=5, pady=5
+            row=2, column=0, columnspan=4, sticky="w", padx=5, pady=5
         )
 
         sec1.columnconfigure(1, weight=1)
@@ -269,8 +281,25 @@ class ILACSVParserTab(ttk.Frame):
         )
         self.use_eop_check.pack(side="left", padx=(4, 0))
 
+        packet_row = ttk.Frame(settings)
+        packet_row.grid(row=7, column=0, sticky="w", pady=2)
+
+        ttk.Label(packet_row, text="Packet output:").pack(side="left")
+        ttk.Radiobutton(
+            packet_row,
+            text="One long",
+            variable=self.packet_output_var,
+            value="concat",
+        ).pack(side="left", padx=(6, 2))
+        ttk.Radiobutton(
+            packet_row,
+            text="Multiple arrays",
+            variable=self.packet_output_var,
+            value="multi",
+        ).pack(side="left", padx=(2, 0))
+
         combine_row = ttk.Frame(settings)
-        combine_row.grid(row=7, column=0, sticky="w", pady=2)
+        combine_row.grid(row=8, column=0, sticky="w", pady=2)
 
         ttk.Label(combine_row, text="Combine mode:").pack(side="left")
         ttk.Radiobutton(
@@ -292,7 +321,7 @@ class ILACSVParserTab(ttk.Frame):
         ).pack(side="left", padx=(4, 0))
 
         btn_row = ttk.Frame(settings)
-        btn_row.grid(row=8, column=0, sticky="w", pady=(6, 2))
+        btn_row.grid(row=9, column=0, sticky="w", pady=(6, 2))
 
         ttk.Button(btn_row, text="Convert selected", command=self.convert_data).pack(
             side="left"
@@ -302,7 +331,7 @@ class ILACSVParserTab(ttk.Frame):
         )
 
         ttk.Label(settings, textvariable=self.convert_status_var).grid(
-            row=9, column=0, sticky="w", pady=(2, 0)
+            row=10, column=0, sticky="w", pady=(2, 0)
         )
 
         sec2.columnconfigure(0, weight=1)
@@ -359,6 +388,16 @@ class ILACSVParserTab(ttk.Frame):
             variable=self.BTE_format_var
         )
         self.BTE_format_check.pack(side="left")
+
+        ttk.Label(row1, text="   Export format:").pack(side="left", padx=(8, 2))
+        self.export_format_menu = ttk.Combobox(
+            row1,
+            state="readonly",
+            width=8,
+            textvariable=self.export_format_var,
+            values=["as-is", "fixed", "float"],
+        )
+        self.export_format_menu.pack(side="left", padx=(0, 8))
 
         ttk.Label(row1, text="   Export fixed precision [sign, int, frac]:").pack(
             side="left", padx=(5, 2)
@@ -425,13 +464,140 @@ class ILACSVParserTab(ttk.Frame):
 
     # --- Section 1 actions ---
 
+    def load_signals_from_stp_csv(self, csv_path: Path, name_filter: str = "") -> dict:
+        name_filter_l = (name_filter or "").strip().lower()
+
+        with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = [ln.rstrip("\n") for ln in f]
+
+        # ---- Locate sections + collect "signals_list" from Groups: ----
+        data_idx = None
+        groups_idx = None
+
+        for i, ln in enumerate(lines):
+            s = ln.strip().lower()
+            if s == "groups:":
+                groups_idx = i
+            if s == "data:":
+                data_idx = i
+                break  # important: stop scanning header sections once Data: starts
+
+        if data_idx is None:
+            raise ValueError("Not a Quartus SignalTap CSV: missing 'Data:' section.")
+        if data_idx + 1 >= len(lines):
+            raise ValueError("STP CSV is missing header row after 'Data:' section.")
+
+        # signals_list: set of signal names defined in Groups section
+        signals_list = set()
+        if groups_idx is not None:
+            # Between "Groups:" and "Data:" there are lines like:
+            #   some_signal_name=...
+            # We only take the left side of '='
+            for ln in lines[groups_idx + 1: data_idx]:
+                if "=" not in ln:
+                    continue
+                left = ln.split("=", 1)[0].strip()
+                if left:
+                    signals_list.add(left)
+
+        # ---- Parse Data header row ----
+        header_all = [t.strip() for t in lines[data_idx + 1].split(",") if t.strip() != ""]
+        if len(header_all) < 2:
+            raise ValueError("STP CSV header is too short.")
+
+        # First column is time; remaining are signal columns
+        sig_names_all = header_all[1:]
+
+        # Apply signals_list filter ONLY if we actually found any signals in Groups:
+        if signals_list:
+            sig_names = [n for n in sig_names_all if n in signals_list]
+        else:
+            sig_names = sig_names_all
+
+        if not sig_names:
+            raise ValueError("No matching STP signals found (after applying signals_list filter).")
+
+        cols = {name: [] for name in sig_names}
+
+        # ---- Parse data rows ----
+        # We need mapping from name -> original column index in the CSV row
+        name_to_col = {name: (1 + sig_names_all.index(name)) for name in sig_names}
+
+        for ln in lines[data_idx + 2:]:
+            if not ln.strip():
+                continue
+            toks = [t.strip() for t in ln.split(",")]
+            if len(toks) < 2:
+                continue
+
+            # For safety: pad rows
+            need = 1 + len(sig_names_all)
+            if len(toks) < need:
+                toks += [""] * (need - len(toks))
+
+            for name, col_idx in name_to_col.items():
+                v = toks[col_idx].strip() if col_idx < len(toks) else ""
+                if v == "":
+                    v = "X"
+                cols[name].append(v)
+
+        def split_on_x(samples):
+            segs, curr = [], []
+            for v in samples:
+                if str(v).strip().upper() == "X":
+                    if curr:
+                        segs.append(curr)
+                        curr = []
+                else:
+                    curr.append(v)
+            if curr:
+                segs.append(curr)
+            return segs
+
+        db = {}
+        for idx, name in enumerate(sig_names):
+            if name_filter_l and name_filter_l not in name.lower():
+                continue
+
+            segs = split_on_x(cols.get(name, []))
+            if not segs:
+                continue
+
+            if len(segs) == 1:
+                db[name] = {"idx": idx, "samples": segs[0]}
+            else:
+                for k, seg in enumerate(segs):
+                    db[f"{name}__seg{k}"] = {"idx": idx, "samples": seg}
+
+        return db
+
     def browse_csv(self):
         filename = filedialog.askopenfilename(
-            title="Select ILA CSV",
+            title="Select ILA/STP CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
         if filename:
             self.csv_path_var.set(filename)
+
+    def detect_file_type(self):
+        """Detect whether the selected CSV is Quartus SignalTap (STP) or Vivado ILA."""
+        csv_path = Path(self.csv_path_var.get().strip())
+        if not csv_path.is_file():
+            messagebox.showerror("Detect", "Please select a valid CSV file.")
+            return
+
+        kind = detect_csv_kind(csv_path)
+        self.csv_kind_var.set(kind)
+
+        if kind == "quartus_stp":
+            msg = "Detected: Quartus SignalTap (STP) CSV"
+        elif kind == "vivado_ila":
+            msg = "Detected: Vivado ILA CSV"
+        else:
+            msg = "Detected: Unknown CSV format (defaulting to Vivado ILA parser)"
+
+        self.search_status_var.set(msg)
+        messagebox.showinfo("Detect file type", msg)
 
     def search_signals(self):
         csv_path = Path(self.csv_path_var.get().strip())
@@ -441,8 +607,18 @@ class ILACSVParserTab(ttk.Frame):
 
         name_filter = self.signal_filter_var.get().strip()
 
+        kind = detect_csv_kind(csv_path)
+        self.csv_kind_var.set(kind)
+
         try:
-            db = load_signals_from_csv(csv_path, name_filter)
+            if kind == "quartus_stp":
+                db = self.load_signals_from_stp_csv(csv_path, name_filter)
+                self.db_raw_stp = db
+                self.db_raw_ila = {}
+            else:
+                db = load_signals_from_csv(csv_path, name_filter)
+                self.db_raw_ila = db
+                self.db_raw_stp = {}
         except Exception as e:
             self.db_raw = {}
             self.signals_listbox.delete(0, tk.END)
@@ -539,12 +715,22 @@ class ILACSVParserTab(ttk.Frame):
                     return
 
                 # Filter samples where valid == 1, optional sop and eop
-                filtered = filter_data(sig_samples, valid_samples, sop_samples, eop_samples)
+                multi_packets = (getattr(self, "packet_output_var", None) is not None) and (self.packet_output_var.get() == "multi")
 
-                db_selected[name] = {
-                    "idx": sig_info["idx"],
-                    "samples": filtered,
-                }
+                if multi_packets:
+                    packets = filter_data_packets_list(sig_samples, valid_samples, sop_samples, eop_samples)
+                    for k, pkt in enumerate(packets):
+                        pkt_name = f"{name}__pkt{k}"
+                        db_selected[pkt_name] = {
+                            "idx": sig_info["idx"],
+                            "samples": pkt,
+                        }
+                else:
+                    filtered = filter_data_all_packets(sig_samples, valid_samples, sop_samples, eop_samples)
+                    db_selected[name] = {
+                        "idx": sig_info["idx"],
+                        "samples": filtered,
+                    }
 
         else:
             # No valid signal selected -> use all samples
@@ -720,8 +906,19 @@ class ILACSVParserTab(ttk.Frame):
                 sig1 = [s for s, v in zip(sig1_raw, valid_samples) if sample_is_valid(v)]
                 sig2 = [s for s, v in zip(sig2_raw, valid_samples) if sample_is_valid(v)]
             else:
-                sig1 = filter_data(sig1_raw, valid_samples, sop_samples, eop_samples)
-                sig2 = filter_data(sig2_raw, valid_samples, sop_samples, eop_samples)
+                multi_packets = (getattr(self, "packet_output_var", None) is not None) and (self.packet_output_var.get() == "multi")
+
+                if multi_packets:
+                    pkts1 = filter_data_packets_list(sig1_raw, valid_samples, sop_samples, eop_samples)
+                    pkts2 = filter_data_packets_list(sig2_raw, valid_samples, sop_samples, eop_samples)
+                    packets_pair = (pkts1, pkts2)
+                    # Keep non-empty placeholders to pass the existing empty-check below
+                    sig1 = pkts1[0] if pkts1 else []
+                    sig2 = pkts2[0] if pkts2 else []
+                else:
+                    packets_pair = None
+                    sig1 = filter_data_all_packets(sig1_raw, valid_samples, sop_samples, eop_samples)
+                    sig2 = filter_data_all_packets(sig2_raw, valid_samples, sop_samples, eop_samples)
 
         else:
             sig1 = sig1_raw
@@ -758,6 +955,75 @@ class ILACSVParserTab(ttk.Frame):
 
         except ValueError:
             messagebox.showerror("Error", "Precision fields must be integers.")
+            return
+
+        # If multi-packet mode is enabled, combine each packet separately
+        if 'packets_pair' in locals() and packets_pair is not None:
+            pkts1, pkts2 = packets_pair
+            if not pkts1 or not pkts2:
+                messagebox.showwarning("Warning", "After applying packet filtering, no samples remain to combine.")
+                return
+
+            n_pkts = min(len(pkts1), len(pkts2))
+            if n_pkts == 0:
+                messagebox.showwarning("Warning", "No complete packets found to combine.")
+                return
+
+            for k in range(n_pkts):
+                temp_db = {
+                    name1: {"idx": 0, "samples": pkts1[k]},
+                    name2: {"idx": 0, "samples": pkts2[k]},
+                }
+
+                try:
+                    conv_db = convert_db(temp_db, data_type, data_prec, data_complex, data_par, data_par_mode)
+                except Exception as e:
+                    messagebox.showerror("Conversion error", str(e))
+                    return
+
+                arr1 = conv_db[name1]["samples"]
+                arr2 = conv_db[name2]["samples"]
+
+                # handle swap roles
+                local_name1, local_name2 = name1, name2
+                if self.combine_swap_var.get():
+                    arr1, arr2 = arr2, arr1
+                    local_name1, local_name2 = name2, name1
+
+                if len(arr1) != len(arr2):
+                    messagebox.showerror("Error", "Converted packet signals have different lengths; cannot combine.")
+                    return
+
+                if mode == 'ri':
+                    combined_samples = [complex(a, b) for a, b in zip(arr1, arr2)]
+                    combined_base = f"{local_name1}_ReIm_{local_name2}"
+                elif mode == 'eo':
+                    combined_samples = []
+                    for a, b in zip(arr1, arr2):
+                        combined_samples.append(a)
+                        combined_samples.append(b)
+                    combined_base = f"{local_name1}_EvenOdd_{local_name2}"
+                else:
+                    messagebox.showerror("Error", "Unknown combine mode.")
+                    return
+
+                combined_name = f"{combined_base}__pkt{k}"
+
+                self.db_converted[combined_name] = {"samples": combined_samples}
+
+                existing = self.converted_listbox.get(0, tk.END)
+                if combined_name not in existing:
+                    self.converted_listbox.insert(tk.END, combined_name)
+
+            mode_str = 'Real/Imag' if mode == 'ri' else 'Even/Odd'
+            if valid_name:
+                self.convert_status_var.set(
+                    f"Combined {n_pkts} packet(s): '{name1}' + '{name2}' ({mode_str}, valid='{valid_name}')."
+                )
+            else:
+                self.convert_status_var.set(
+                    f"Combined {n_pkts} packet(s): '{name1}' + '{name2}' ({mode_str})."
+                )
             return
 
         # Convert both signals using existing convert_db helper
@@ -906,64 +1172,162 @@ class ILACSVParserTab(ttk.Frame):
             self.output_dir_var.set(directory)
 
     def write_files(self):
-        if not self.db_converted:
-            messagebox.showerror("Error", "No converted data. Run Convert first.")
-            return
+            """
+            Write signals to TXT files.
 
-        out_dir = Path(self.output_dir_var.get().strip() or ".")
-        try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            messagebox.showerror("Error", f"Cannot create directory: {e}")
-            return
+            Export source preference:
+              - If converted DB exists -> export from converted (selection in converted listbox, else all).
+              - Else -> export from raw (selection in raw listbox, else all).
 
-        file_name  = self.base_filename_var.get()
+            Export format:
+              - as-is : write values as they are (strings/numbers)
+              - fixed : quantize numbers to integer fixed-point using [sign,int,frac]
+              - float : write numeric values as floats (text)
+            """
+            export_fmt = (self.export_format_var.get() or "as-is").strip().lower()
+            bte_enabled = bool(self.BTE_format_var.get())
 
-        BTE_format_check = self.BTE_format_var.get()
-        bad_chars = '/\\:[],.'
-        trans_table = str.maketrans({c: '_' for c in bad_chars})
+            if bte_enabled and export_fmt != "fixed":
+                messagebox.showerror("Export", "BTE format is only supported with Export format = 'fixed'.")
+                return
 
-        # use selection if any, otherwise write all
-        selection = self.converted_listbox.curselection()
-        if selection:
-            # Only the selected converted signals
-            selected_names = [self.converted_listbox.get(i) for i in selection]
-        else:
-            # Nothing selected → write all converted signals
-            selected_names = list(self.db_converted.keys())
+            out_dir = Path(self.output_dir_var.get().strip() or ".")
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create output directory:\n{e}")
+                return
 
-        for idx, sig_name in enumerate(selected_names):
-            info = self.db_converted.get(sig_name)
-            sig_corrected = sig_name.translate(trans_table)
-            if file_name:
-                sig_corrected = file_name.translate(trans_table)
-            file_path = out_dir / f"{sig_corrected}_{str(idx)}.txt"
-            samples = info["samples"]
-            if BTE_format_check:
-                sign_bit  = int(self.wr_sign_bit_var.get())
-                int_bits  = int(self.wr_int_bits_var.get())
-                frac_bits = int(self.wr_frac_bits_var.get())
-                samples   = convert_to_fixed(info["samples"], sign_bit, int_bits, frac_bits)
-            with open(file_path, mode="w", encoding="utf-8") as f:
-                if BTE_format_check:
-                    f.write("START 0\n")
-                for sample in samples:
-                    is_complex = np.iscomplexobj(sample)
-                    real = np.real(sample)
-                    if is_complex:
-                        imag = np.imag(sample)
+            bad_chars = r'\/:*?"<>|'
+            trans_table = str.maketrans({c: '_' for c in bad_chars})
+
+            # Choose export source DB + selection listbox
+            if self.db_converted:
+                src_db = self.db_converted
+                lb = self.converted_listbox
+                selection = lb.curselection()
+                if selection:
+                    selected_names = [lb.get(i) for i in selection]
+                else:
+                    selected_names = list(src_db.keys())
+            else:
+                if not self.db_raw:
+                    messagebox.showerror("Export", "No signals loaded. Run Search first.")
+                    return
+                src_db = self.db_raw
+                lb = self.signals_listbox
+                selection = lb.curselection()
+                if selection:
+                    selected_names = [self.signals_full_names[i] for i in selection]
+                else:
+                    selected_names = list(src_db.keys())
+            # Fixed export precision (only needed for Export format = fixed or BTE)
+            sign_bit = int_bits = frac_bits = None
+            if export_fmt == "fixed" or bte_enabled:
+                try:
+                    sign_bit  = int(self.wr_sign_bit_var.get())
+                    int_bits  = int(self.wr_int_bits_var.get())
+                    frac_bits = int(self.wr_frac_bits_var.get())
+                except Exception:
+                    messagebox.showerror(
+                        "Export",
+                        "Invalid fixed precision fields (sign/int/frac). Must be integers."
+                    )
+                    return
+
+            base_name = self.base_filename_var.get().strip()
+
+            for idx, sig_name in enumerate(selected_names):
+                info = src_db.get(sig_name)
+                if info is None:
+                    continue
+
+                sig_corrected = sig_name.translate(trans_table)
+                if base_name:
+                    sig_corrected = base_name.translate(trans_table)
+
+                file_path = out_dir / f"{sig_corrected}_{idx}.txt"
+                samples = info.get("samples", [])
+
+                # Normalize to numpy array for vector ops where possible
+                arr = np.asarray(samples)
+
+                if export_fmt == "fixed":
+                    # We expect numeric samples (real or complex). Best-effort conversion for string arrays.
+                    if arr.dtype.kind in ("U", "S", "O"):
+                        # Try to coerce to float (works for "123", "12.3"), else error
+                        try:
+                            arr = arr.astype(float)
+                        except Exception:
+                            messagebox.showerror(
+                                "Export",
+                                f"Signal '{sig_name}' cannot be exported as fixed: samples are not numeric."
+                            )
+                            return
+
+                    if np.iscomplexobj(arr):
+                        real_fixed = convert_to_fixed(np.real(arr), sign_bit, int_bits, frac_bits)
+                        imag_fixed = convert_to_fixed(np.imag(arr), sign_bit, int_bits, frac_bits)
                     else:
-                        imag = ""
+                        real_fixed = convert_to_fixed(arr, sign_bit, int_bits, frac_bits)
+                        imag_fixed = np.zeros(len(real_fixed), dtype=int)
 
-                    if BTE_format_check:
-                        f.write(f"{int(imag)} {int(real)}\n")
+                    # Defensive: ensure convert_to_fixed() output is real-valued integers.
+                    # Some pipelines return complex dtype with 0j imaginary part.
+                    real_fixed = np.asarray(real_fixed)
+                    imag_fixed = np.asarray(imag_fixed)
+                    if np.iscomplexobj(real_fixed):
+                        real_fixed = np.real(real_fixed)
+                    if np.iscomplexobj(imag_fixed):
+                        imag_fixed = np.real(imag_fixed)
+                    try:
+                        real_fixed = np.round(real_fixed).astype(np.int64)
+                        imag_fixed = np.round(imag_fixed).astype(np.int64)
+                    except Exception:
+                        # Fallback for object arrays
+                        real_fixed = np.array([int(float(v)) for v in real_fixed], dtype=np.int64)
+                        imag_fixed = np.array([int(float(v)) for v in imag_fixed], dtype=np.int64)
+
+                    with open(file_path, mode="w", encoding="utf-8") as f:
+                        if bte_enabled:
+                            f.write("START 0\n")
+                        for im, re_ in zip(imag_fixed, real_fixed):
+                            if bte_enabled:
+                                f.write(f"{int(im)} {int(re_)}\n")
+                            else:
+                                f.write(f"{int(im)} {int(re_)}\n")
+                        if bte_enabled:
+                            f.write("END 0")
+
+                elif export_fmt == "float":
+                    # Write numeric as float text; if not numeric, fall back to str()
+                    if np.iscomplexobj(arr):
+                        real_vals = np.real(arr)
+                        imag_vals = np.imag(arr)
+                        with open(file_path, mode="w", encoding="utf-8") as f:
+                            for im, re_ in zip(imag_vals, real_vals):
+                                try:
+                                    f.write(f"{float(im)} {float(re_)}\n")
+                                except Exception:
+                                    f.write(f"{im} {re_}\n")
                     else:
-                        f.write(str(imag) + " " + str(real) + "\n")
+                        with open(file_path, mode="w", encoding="utf-8") as f:
+                            for v in arr:
+                                try:
+                                    f.write(f"0.0 {float(v)}\n")
+                                except Exception:
+                                    f.write(f"0 {v}\n")
 
-                if BTE_format_check:
-                    f.write("END 0")
+                else:  # as-is
+                    with open(file_path, mode="w", encoding="utf-8") as f:
+                        if np.iscomplexobj(arr):
+                            for v in arr:
+                                f.write(f"{np.imag(v)} {np.real(v)}\n")
+                        else:
+                            for v in arr:
+                                f.write(f"0 {v}\n")
 
-        self.write_status_var.set(f"Wrote {len(selected_names)} signal(s) to {out_dir}")
+            self.write_status_var.set(f"Wrote {len(selected_names)} signal(s) to {out_dir}")
 
     # --- Section 4 actions ---
 
@@ -1550,3 +1914,12 @@ class ILACSVParserTab(ttk.Frame):
         else:
             # Non-BTE: single array → single window
             self._open_plot_popup(data, name)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("DSP Lab + MAT Parser")
+
+    tab = ILACSVParserTab(root)
+    tab.pack(fill="both", expand=True)
+
+    root.mainloop()

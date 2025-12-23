@@ -3,7 +3,6 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 from scipy.io.matlab.mio5_params import mat_struct
-from ba_quan import *
 
 # ------------------------
 #  Core conversion helpers
@@ -78,6 +77,44 @@ def collect_signals_v5(path):
 
 # ---------- DSP Helpers ---------- #
 # ---------- ILA Helpers ---------- #
+
+def detect_csv_kind(csv_path: Path) -> str:
+
+    """Return 'quartus_stp', 'vivado_ila', or 'unknown'."""
+
+    try:
+
+        with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+
+            head = [f.readline() for _ in range(120)]
+
+    except Exception:
+
+        return "unknown"
+
+
+
+    head_txt = "".join(head).lower()
+
+
+
+    # Quartus SignalTap export commonly includes these section headers
+
+    if "groups:" in head_txt and "data:" in head_txt:
+
+        return "quartus_stp"
+
+
+
+    # Vivado ILA CSV often includes a Radix row / Sample in Buffer / Trigger
+
+    if "radix" in head_txt or "sample in buffer" in head_txt or "trigger" in head_txt:
+
+        return "vivado_ila"
+
+    return "unknown"
+
+
 def to_signed_dec(raw, data_prec):
     """
     Convert an integer 'raw' in fixed-point s.int.frac format
@@ -347,38 +384,89 @@ def load_signals_from_csv(csv_path: Path, name_filter: str):
     return db
 
 
-def filter_data(samples, valid_samples=None, sop_samples=None, eop_samples=None):
-    """
-    Filter `samples` using optional VALID, SOP and EOP signals.
+def _find_packet_ranges(n: int, sop_samples=None, eop_samples=None):
+    """Return list of (start, end_exclusive) ranges for all packets found."""
+    sop_samples = sop_samples or []
+    eop_samples = eop_samples or []
 
-    - If SOP is given: keep from first SOP==1 onward.
-    - If EOP is given: stop after first EOP==1 (including that sample).
-    - If VALID is given: within that range, keep only VALID==1 samples.
-    - If VALID is None/Falsey: keep all samples in the SOP/EOP range.
-    """
+    ranges = []
+    i = 0
+
+    while i < n:
+        start = i
+
+        # If SOP is provided, packet starts at next sop==1
+        if sop_samples:
+            found = False
+            for k in range(i, n):
+                if sample_is_valid(sop_samples[k]):
+                    start = k
+                    found = True
+                    break
+            if not found:
+                break
+
+        # End is next eop==1 after start (inclusive), else end of trace
+        end = n
+        if eop_samples:
+            for k in range(start, n):
+                if sample_is_valid(eop_samples[k]):
+                    end = k + 1
+                    break
+
+        if end <= start:
+            end = start + 1
+
+        ranges.append((start, end))
+        i = end
+
+        # No SOP/EOP => single range
+        if not sop_samples and not eop_samples:
+            break
+
+    return ranges
+
+
+def filter_data_all_packets(samples, valid_samples=None, sop_samples=None, eop_samples=None):
+    """Concatenate all packets into one list, optionally filtering by VALID within each packet."""
     n = len(samples)
-    end = n
+    if n == 0:
+        return []
 
-    # Find start (SOP)
-    start = 0
-    if sop_samples:
-        for i in range(start, end):
-            if sop_samples[i] == '1':
-                start = i
-                break
+    ranges = _find_packet_ranges(n, sop_samples=sop_samples, eop_samples=eop_samples)
+    out = []
 
-    # Find end (EOP), exclusive
-    if eop_samples:
-        for i in range(start, end):
-            if eop_samples[i] == '1':
-                end = i + 1  # +1 because of range()
-                break
+    for start, end in ranges:
+        if valid_samples:
+            for i in range(start, min(end, n)):
+                if sample_is_valid(valid_samples[i]):
+                    out.append(samples[i])
+        else:
+            out.extend(samples[start:min(end, n)])
 
-    # Apply VALID filter (if provided)
-    filtered_samples = []
-    if valid_samples:
-        for i in range(start, end):
-            if valid_samples[i] == '1':
-                filtered_samples.append(samples[i])
+    return out
 
-    return filtered_samples
+
+def filter_data_packets_list(samples, valid_samples=None, sop_samples=None, eop_samples=None):
+    """Return a list of packet arrays. Each packet may be filtered by VALID."""
+    n = len(samples)
+    if n == 0:
+        return []
+
+    ranges = _find_packet_ranges(n, sop_samples=sop_samples, eop_samples=eop_samples)
+    packets = []
+
+    for start, end in ranges:
+        if valid_samples:
+            pkt = []
+            for i in range(start, min(end, n)):
+                if sample_is_valid(valid_samples[i]):
+                    pkt.append(samples[i])
+            if pkt:
+                packets.append(pkt)
+        else:
+            pkt = samples[start:min(end, n)]
+            if pkt:
+                packets.append(list(pkt))
+
+    return packets
