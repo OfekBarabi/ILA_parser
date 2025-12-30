@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-from ILA_CSV_parser import ILACSVParserTab
+from CSV_parser import CSVParserTab
 from DSP_lab import DSPLabMatTab
 
 class MainApp(tk.Tk):
@@ -14,10 +14,10 @@ class MainApp(tk.Tk):
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
 
-        self.ila_tab = ILACSVParserTab(notebook)
+        self.csv_tab = CSVParserTab(notebook)
         self.dsp_mat_tab = DSPLabMatTab(notebook)
 
-        notebook.add(self.ila_tab, text="ILA CSV Parser")
+        notebook.add(self.csv_tab, text="CSV Parser")
         notebook.add(self.dsp_mat_tab, text="DSP-MAT-Lab")
 
 

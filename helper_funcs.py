@@ -133,16 +133,20 @@ def to_signed_dec(raw, data_prec):
 
 def convert_to_fixed(samples, sign_bit, int_bits, frac_bits):
     """
-    Convert an array of real-valued samples (floats) into fixed-point integers
+    Convert an array of samples (real or complex) into fixed-point integers
     in s.int.frac format, suitable for hardware (two's complement).
 
-    samples   : iterable of floats
+    samples   : iterable of floats/complex
     sign_bit  : 1 for signed two's complement, 0 for unsigned
     int_bits  : number of integer bits (excluding sign)
     frac_bits : number of fractional bits
 
-    Returns: list of ints in the range representable by the given format.
+    Returns:
+      - list[int] for real-only input
+      - list[complex] (with integer real/imag parts) for complex input
     """
+    samples = list(samples)
+
     total_bits = sign_bit + int_bits + frac_bits
     scale = 1 << frac_bits
     mag_bits = int_bits + frac_bits  # magnitude bits (excluding sign)
@@ -156,7 +160,8 @@ def convert_to_fixed(samples, sign_bit, int_bits, frac_bits):
         min_val = 0
         max_val = (1 << mag_bits) - 1
 
-    mask = (1 << total_bits) - 1
+    # Detect if input is complex (dtype or any non-zero imag)
+    is_complex = np.iscomplexobj(samples) or any((np.imag(x) != 0) for x in samples)
 
     fixed_vals = []
     for x in samples:
@@ -175,11 +180,12 @@ def convert_to_fixed(samples, sign_bit, int_bits, frac_bits):
         elif val_imag > max_val:
             val_imag = max_val
 
-        # map to raw hardware word (two's complement for signed)
-        fixed_vals.append(complex(val_real,val_imag))
+        if is_complex:
+            fixed_vals.append(complex(val_real, val_imag))
+        else:
+            fixed_vals.append(val_real)
 
     return fixed_vals
-
 
 def fixed_to_dec(samples, data_prec, data_complex, data_par, data_par_mode):
     """
@@ -357,7 +363,7 @@ def load_signals_from_csv(csv_path: Path, name_filter: str):
             # full name from header
             full_name = signal_name
             # short name for filtering / display
-            signal_name_short = Path(signal_name).name
+            signal_name_short = Path(signal_name.replace("\\", "/")).name
             if name_filter_lower in signal_name_short.lower():
                 abs_col_idx = base_idx + idx
                 db[full_name] = {
